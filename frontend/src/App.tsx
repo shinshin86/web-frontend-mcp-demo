@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "./types";
-import { callRandomIntTool, chatWithGeminiTools, chatWithOpenAITools } from "./llm";
+import { callRandomIntTool, chatWithClaudeTools, chatWithGeminiTools, chatWithOpenAITools } from "./llm";
 
-type Provider = "OPENAI" | "GEMINI";
+type Provider = "OPENAI" | "GEMINI" | "CLAUDE";
 
 export default function App() {
   const [provider, setProvider] = useState<Provider>("OPENAI");
@@ -18,13 +18,18 @@ export default function App() {
 
 
   const chatDispatcher = useCallback(
-    (prompt: string) =>
-      provider === "OPENAI"
-        ? chatWithOpenAITools(prompt, messages)
-        : chatWithGeminiTools(prompt, messages),
+    (prompt: string) => {
+      switch (provider) {
+        case "OPENAI":
+          return chatWithOpenAITools(prompt, messages);
+        case "GEMINI":
+          return chatWithGeminiTools(prompt, messages);
+        case "CLAUDE":
+          return chatWithClaudeTools(prompt, messages);
+      }
+    },
     [messages, provider],
   );
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
@@ -63,6 +68,7 @@ export default function App() {
         >
           <option value="OPENAI">OpenAI</option>
           <option value="GEMINI">Gemini</option>
+          <option value="CLAUDE">Claude</option>
         </select>
       </div>
 
