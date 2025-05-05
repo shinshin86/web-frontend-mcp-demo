@@ -1,32 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getMcpClient } from "./mcpClient";
 import type { ChatMessage } from "./types";
+import { callRandomIntTool, chatWithGeminiTools, chatWithOpenAITools } from "./llm";
 
-const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
-
-// MCP tool definition
-const RANDOM_INT_TOOL = {
-  type: "function",
-  function: {
-    name: "randomInt",
-    description:
-      "Return a random integer from 0 (inclusive) up to, but not including, `max`. "
-      + "If `max` is omitted the default upper-bound is 100.",
-    parameters: {
-      type: "object",
-      properties: {
-        max: {
-          type: "integer",
-          minimum: 1,
-          description: "Exclusive upper bound for the random integer",
-        },
-      },
-    },
-  },
-} as const;
-
+type Provider = "OPENAI" | "GEMINI";
 
 export default function App() {
+  const [provider, setProvider] = useState<Provider>("OPENAI");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -37,89 +16,27 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const chatWithTools = useCallback(
-    async (userPrompt: string): Promise<string> => {
-      const apiKey = import.meta.env.VITE_OPENAI_API_KEY as string;
-      if (!apiKey) throw new Error("VITE_OPENAI_API_KEY is not set");
 
-      // React state messages to OpenAI format
-      const history = messages.map(({ role, content }) => ({ role, content }));
-
-      // Loop with GPT, and execute MCP when tool_call comes
-      let reqMessages: any[] = [
-        { role: "system", content: "You are a helpful assistant." },
-        ...history,
-        { role: "user", content: userPrompt },
-      ];
-
-      while (true) {
-        const res = await fetch(OPENAI_ENDPOINT, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: "gpt-4.1-nano",
-            messages: reqMessages,
-            tools: [RANDOM_INT_TOOL],
-            tool_choice: "auto",
-          }),
-        }).then((r) => r.json());
-
-        const msg = res.choices?.[0]?.message;
-        if (!msg) throw new Error("No response from OpenAI");
-
-        // If tool_call is included
-        if (msg.tool_calls?.length) {
-          const call = msg.tool_calls[0];
-          const { name, arguments: argsJson } = call.function;
-          if (name === "randomInt") {
-            const args = JSON.parse(argsJson || "{}") as { max?: number };
-
-            // RPC to MCP
-            const client = await getMcpClient();
-            const out = await client.callTool({
-              name: "randomInt",
-              arguments: args,
-            });
-            const rand =
-              (out.content as { text: string }[] | undefined)?.[0]?.text ?? "";
-
-            // Send tool_result back to GPT to get the final answer
-            reqMessages = [
-              ...reqMessages,
-              msg, // assistant(function_call)
-              { role: "tool", content: rand, tool_call_id: call.id },
-            ];
-            continue; // Loop again to get the final answer
-          }
-        }
-
-        // If a normal assistant response comes → Return this
-        return msg.content ?? "(no response)";
-      }
-    },
-    [messages],
+  const chatDispatcher = useCallback(
+    (prompt: string) =>
+      provider === "OPENAI"
+        ? chatWithOpenAITools(prompt, messages)
+        : chatWithGeminiTools(prompt, messages),
+    [messages, provider],
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
 
-    const userMsg: ChatMessage = { role: "user", content: input };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((prev) => [...prev, { role: "user", content: input }]);
     setInput("");
     setLoading(true);
-
     try {
-      const aiContent = await chatWithTools(input);
+      const aiContent = await chatDispatcher(input);
       setMessages((prev) => [...prev, { role: "assistant", content: aiContent }]);
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Error: ${err.message}` },
-      ]);
+      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${err.message}` }]);
     } finally {
       setLoading(false);
     }
@@ -128,13 +45,8 @@ export default function App() {
   // Simple MCP demo: call "randomInt" tool with fixed numbers
   const handleMcpRandomInt = async () => {
     try {
-      const client = await getMcpClient();
-      const result = await client.callTool({
-        name: "randomInt",
-        arguments: {},
-      });
-      const contentArr = result.content as { text: string }[] | undefined;
-      alert(`Random: ${contentArr?.[0]?.text}`)
+      const result = await callRandomIntTool({});
+      alert(`Random: ${result}`)
     } catch (err: any) {
       alert(`MCP error: ${err.message}`);
     }
@@ -142,7 +54,17 @@ export default function App() {
 
   return (
     <div className="h-screen grid grid-rows-[auto_1fr_auto] p-4 max-w-3xl mx-auto">
-      <h1 className="text-2xl font-semibold mb-2">MCP × ChatGPT Demo</h1>
+      <div className="flex items-center gap-4 mb-2">
+        <h1 className="text-2xl font-semibold">MCP × {provider}</h1>
+        <select
+          value={provider}
+          onChange={(e) => setProvider(e.target.value as Provider)}
+          className="px-2 py-1 border rounded-lg text-sm"
+        >
+          <option value="OPENAI">OpenAI</option>
+          <option value="GEMINI">Gemini</option>
+        </select>
+      </div>
 
       <div className="overflow-y-auto space-y-2 bg-white p-4 rounded-xl shadow inner-scroll">
         {messages.map((m, i) => (
@@ -152,7 +74,7 @@ export default function App() {
               m.role === "user" ? "bg-blue-50" : "bg-gray-50"
             }`}
           >
-            <strong>{m.role === "user" ? "You" : "GPT"}:</strong> {m.content}
+            <strong>{m.role === "user" ? "You" : "AI"}:</strong> {m.content}
           </div>
         ))}
         <div ref={bottomRef} />
